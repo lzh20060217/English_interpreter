@@ -1,0 +1,522 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>麦克风诊断工具</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            max-width: 720px;
+            margin: 40px auto;
+            padding: 20px;
+            background: #0a0a0b;
+            color: #e4e4e7;
+        }
+        h1 { font-size: 22px; margin-bottom: 8px; }
+        p.subtitle { color: #a1a1aa; margin-bottom: 24px; font-size: 14px; }
+        .card {
+            background: #18181b;
+            border: 1px solid #27272a;
+            border-radius: 12px;
+            padding: 20px;
+            margin-bottom: 16px;
+        }
+        .card-title {
+            font-size: 14px;
+            font-weight: 600;
+            color: #a1a1aa;
+            margin-bottom: 12px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        .diagnostic-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 8px;
+        }
+        .diag-item {
+            display: flex;
+            justify-content: space-between;
+            padding: 8px 12px;
+            background: #27272a;
+            border-radius: 6px;
+            font-size: 13px;
+        }
+        .diag-item .label { color: #a1a1aa; }
+        .diag-item .value { font-weight: 500; }
+        .pass { color: #4ade80; }
+        .fail { color: #f87171; }
+        .warn { color: #fbbf24; }
+        .info { color: #60a5fa; }
+
+        .button-row { display: flex; gap: 8px; flex-wrap: wrap; margin: 12px 0; }
+        button {
+            padding: 10px 20px;
+            border: none;
+            border-radius: 8px;
+            font-size: 14px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.15s;
+        }
+        button:disabled { opacity: 0.4; cursor: not-allowed; }
+        .btn-primary { background: #0891b2; color: white; }
+        .btn-primary:hover:not(:disabled) { background: #0e7490; }
+        .btn-danger { background: #ef4444; color: white; }
+        .btn-danger:hover:not(:disabled) { background: #dc2626; }
+        .btn-secondary { background: #27272a; color: #e4e4e7; }
+        .btn-secondary:hover:not(:disabled) { background: #3f3f46; }
+
+        #status-box {
+            margin: 12px 0;
+            padding: 12px 16px;
+            border-radius: 8px;
+            font-size: 14px;
+            line-height: 1.5;
+        }
+        .status-idle { background: #27272a; border-left: 4px solid #a1a1aa; }
+        .status-recording { background: #422006; border-left: 4px solid #f59e0b; }
+        .status-error { background: #450a0a; border-left: 4px solid #ef4444; }
+        .status-success { background: #052e16; border-left: 4px solid #4ade80; }
+
+        #level-bar-container {
+            margin: 8px 0;
+            height: 24px;
+            background: #27272a;
+            border-radius: 12px;
+            overflow: hidden;
+            position: relative;
+        }
+        #level-bar {
+            height: 100%;
+            width: 0%;
+            border-radius: 12px;
+            transition: width 50ms linear;
+            background: linear-gradient(90deg, #4ade80, #fbbf24, #ef4444);
+        }
+        #level-text {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            font-size: 11px;
+            font-weight: 600;
+            color: white;
+            text-shadow: 0 1px 2px rgba(0,0,0,0.5);
+        }
+
+        #log-box {
+            background: #09090b;
+            border: 1px solid #27272a;
+            border-radius: 8px;
+            padding: 12px;
+            max-height: 250px;
+            overflow-y: auto;
+            font-family: 'SF Mono', 'Fira Code', monospace;
+            font-size: 12px;
+            line-height: 1.6;
+        }
+        .log-line { padding: 2px 0; border-bottom: 1px solid #18181b; }
+        .log-time { color: #52525b; margin-right: 8px; }
+        .log-error { color: #f87171; }
+        .log-success { color: #4ade80; }
+        .log-info { color: #60a5fa; }
+        .log-warn { color: #fbbf24; }
+
+        #permission-hint {
+            margin-top: 12px;
+            padding: 12px 16px;
+            background: #1c1917;
+            border: 1px solid #78350f;
+            border-radius: 8px;
+            font-size: 13px;
+            line-height: 1.6;
+            display: none;
+        }
+        #permission-hint.visible { display: block; }
+        #permission-hint code {
+            background: #27272a;
+            padding: 1px 5px;
+            border-radius: 3px;
+            font-size: 12px;
+        }
+    </style>
+</head>
+<body>
+    <h1>🎤 麦克风诊断工具</h1>
+    <p class="subtitle">一步步检查麦克风是否能正常工作。打开 Chrome DevTools (F12) → Console 查看更多详情。</p>
+
+    <div class="card">
+        <div class="card-title">环境检测</div>
+        <div class="diagnostic-grid" id="env-checks">
+            <div class="diag-item"><span class="label">浏览器</span><span class="value" id="browser">检测中...</span></div>
+            <div class="diag-item"><span class="label">协议</span><span class="value" id="protocol">检测中...</span></div>
+            <div class="diag-item"><span class="label">安全上下文</span><span class="value" id="secure-ctx">检测中...</span></div>
+            <div class="diag-item"><span class="label">Permissions API</span><span class="value" id="perm-api">检测中...</span></div>
+            <div class="diag-item"><span class="label">麦克风权限</span><span class="value" id="mic-perm">检测中...</span></div>
+            <div class="diag-item"><span class="label">MediaRecorder</span><span class="value" id="media-recorder">检测中...</span></div>
+        </div>
+    </div>
+
+    <div class="card">
+        <div class="card-title">麦克风设备</div>
+        <div id="device-list" style="font-size: 13px; color: #a1a1aa;">点击下方按钮检测...</div>
+        <div class="button-row">
+            <button id="btn-enumerate" class="btn-secondary">🔍 枚举设备</button>
+            <button id="btn-request-perm" class="btn-primary">🎤 请求权限 + 枚举</button>
+        </div>
+    </div>
+
+    <div class="card">
+        <div class="card-title">录音测试</div>
+        <div class="button-row">
+            <button id="btn-start" class="btn-primary">⏺ 开始录音</button>
+            <button id="btn-stop" class="btn-danger" disabled>⏹ 停止录音</button>
+            <button id="btn-playback" class="btn-secondary" disabled>🔊 回放录音</button>
+        </div>
+        <div id="status-box" class="status-idle">状态: 就绪</div>
+        <div id="level-bar-container" style="display:none;">
+            <div id="level-bar"></div>
+            <div id="level-text">0%</div>
+        </div>
+    </div>
+
+    <div id="permission-hint"></div>
+
+    <div class="card">
+        <div class="card-title">调试日志</div>
+        <button id="btn-clear-log" class="btn-secondary" style="margin-bottom:8px;">🗑 清除日志</button>
+        <div id="log-box">日志将显示在这里...</div>
+    </div>
+
+    <script>
+        const logBox = document.getElementById('log-box');
+        const statusBox = document.getElementById('status-box');
+        const levelContainer = document.getElementById('level-bar-container');
+        const levelBar = document.getElementById('level-bar');
+        const levelText = document.getElementById('level-text');
+        const permissionHint = document.getElementById('permission-hint');
+
+        let mediaRecorder = null;
+        let audioContext = null;
+        let audioStream = null;
+        let audioChunks = [];
+        let recordedBlob = null;
+        let animationId = null;
+        let analyserNode = null;
+
+        function log(msg, type = 'info') {
+            const time = new Date().toLocaleTimeString();
+            const line = document.createElement('div');
+            line.className = `log-line log-${type}`;
+            line.innerHTML = `<span class="log-time">[${time}]</span>${msg}`;
+            logBox.appendChild(line);
+            logBox.scrollTop = logBox.scrollHeight;
+            console.log(`[MicDiag] ${msg}`);
+        }
+
+        function setStatus(text, type = 'idle') {
+            statusBox.textContent = `状态: ${text}`;
+            statusBox.className = `status-${type}`;
+        }
+
+        document.getElementById('btn-clear-log').onclick = () => {
+            logBox.innerHTML = '日志已清除';
+        };
+
+        // ---- Environment checks ----
+        function runEnvChecks() {
+            // Browser
+            const ua = navigator.userAgent;
+            const isChrome = ua.includes('Chrome');
+            const isEdge = ua.includes('Edg');
+            const isFirefox = ua.includes('Firefox');
+            const isSafari = ua.includes('Safari') && !isChrome && !isEdge;
+            let browser = 'Unknown';
+            if (isChrome && !isEdge) browser = `Chrome ${/Chrome\/(\d+)/.exec(ua)?.[1] || ''}`;
+            else if (isEdge) browser = `Edge ${/Edg\/(\d+)/.exec(ua)?.[1] || ''}`;
+            else if (isFirefox) browser = `Firefox ${/Firefox\/(\d+)/.exec(ua)?.[1] || ''}`;
+            else if (isSafari) browser = 'Safari';
+            document.getElementById('browser').textContent = browser;
+            document.getElementById('browser').className = 'value info';
+
+            // Protocol
+            const proto = location.protocol;
+            document.getElementById('protocol').textContent = proto;
+            document.getElementById('protocol').className = `value ${proto === 'https:' ? 'pass' : proto === 'http:' && location.hostname === 'localhost' ? 'pass' : 'fail'}`;
+
+            // Secure context
+            const isSecure = window.isSecureContext;
+            document.getElementById('secure-ctx').textContent = isSecure ? '✅ 安全' : '❌ 不安全';
+            document.getElementById('secure-ctx').className = `value ${isSecure ? 'pass' : 'fail'}`;
+            if (!isSecure) {
+                showPermissionHint('⚠️ 当前页面不是安全上下文。麦克风访问需要 <b>HTTPS</b> 或 <b>localhost</b>。<br>你正在通过 ' + proto + '//' + location.hostname + ' 访问。<br>如果这是外网访问，请配置 HTTPS。');
+            }
+
+            // Permissions API
+            const hasPermAPI = !!(navigator.permissions && navigator.permissions.query);
+            document.getElementById('perm-api').textContent = hasPermAPI ? '✅ 可用' : '❌ 不可用';
+            document.getElementById('perm-api').className = `value ${hasPermAPI ? 'pass' : 'warn'}`;
+
+            // MediaRecorder
+            const hasMR = typeof MediaRecorder !== 'undefined';
+            document.getElementById('media-recorder').textContent = hasMR ? '✅ 可用' : '❌ 不可用';
+            document.getElementById('media-recorder').className = `value ${hasMR ? 'pass' : 'fail'}`;
+            if (hasMR) {
+                const mimeTypes = ['audio/webm;codecs=opus', 'audio/webm', 'audio/ogg;codecs=opus', 'audio/mp4'];
+                const supported = mimeTypes.filter(mt => MediaRecorder.isTypeSupported(mt));
+                log(`支持的 MIME 类型: ${supported.join(', ') || '无'}`, supported.length ? 'success' : 'error');
+            }
+
+            // Check mic permission
+            if (hasPermAPI) {
+                navigator.permissions.query({ name: 'microphone' }).then(result => {
+                    document.getElementById('mic-perm').textContent =
+                        result.state === 'granted' ? '✅ 已允许' :
+                        result.state === 'denied' ? '❌ 已拒绝' : '❓ 未询问';
+                    document.getElementById('mic-perm').className = `value ${
+                        result.state === 'granted' ? 'pass' : result.state === 'denied' ? 'fail' : 'warn'
+                    }`;
+                    if (result.state === 'denied') {
+                        showPermissionHint('🚫 麦克风权限已被浏览器<b>阻止</b>。<br><br>解决方法：<br>1. 点击地址栏左侧的 <b>🔒</b> 或 <b>ⓘ</b> 图标<br>2. 选择「网站设置」<br>3. 找到「麦克风」→ 改为「允许」<br>4. 刷新页面后重试');
+                    } else if (result.state === 'granted') {
+                        log('麦克风权限已授予', 'success');
+                    } else {
+                        log('尚未请求麦克风权限', 'warn');
+                    }
+                }).catch(err => {
+                    document.getElementById('mic-perm').textContent = '⚠️ 查询失败';
+                    document.getElementById('mic-perm').className = 'value warn';
+                    log(`权限查询失败: ${err.message}`, 'warn');
+                });
+            } else {
+                document.getElementById('mic-perm').textContent = '⚠️ 不支持';
+                document.getElementById('mic-perm').className = 'value warn';
+            }
+        }
+
+        function showPermissionHint(html) {
+            permissionHint.innerHTML = html;
+            permissionHint.classList.add('visible');
+        }
+
+        // ---- Device enumeration ----
+        async function enumerateDevices() {
+            const listDiv = document.getElementById('device-list');
+            try {
+                const devices = await navigator.mediaDevices.enumerateDevices();
+                const audioInputs = devices.filter(d => d.kind === 'audioinput');
+
+                if (audioInputs.length === 0) {
+                    listDiv.innerHTML = '<span class="fail">❌ 未检测到任何麦克风设备</span>';
+                    log('未检测到麦克风设备', 'error');
+                    return;
+                }
+
+                let html = `<span class="pass">✅ 检测到 ${audioInputs.length} 个麦克风:</span><ul style="margin:8px 0 0 16px;">`;
+                audioInputs.forEach((d, i) => {
+                    const label = d.label || `[未命名设备 #${i+1} - ${d.deviceId.slice(0,12)}...]`;
+                    html += `<li style="margin:4px 0;font-size:13px;">${label}</li>`;
+                    log(`设备 #${i+1}: ${label}`, d.label ? 'success' : 'warn');
+                });
+                html += '</ul>';
+                listDiv.innerHTML = html;
+            } catch (err) {
+                listDiv.innerHTML = `<span class="fail">❌ 枚举失败: ${err.message}</span>`;
+                log(`枚举设备失败: ${err.message}`, 'error');
+            }
+        }
+
+        // ---- Request permission ----
+        async function requestPermissionAndEnumerate() {
+            log('正在请求麦克风权限...', 'info');
+            setStatus('请求权限中...', 'idle');
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                log('✅ 麦克风权限已获得！', 'success');
+                // Stop tracks immediately (we just needed permission)
+                stream.getTracks().forEach(t => t.stop());
+                setStatus('✅ 权限已获得', 'success');
+                await enumerateDevices();
+                // Re-check permission state
+                if (navigator.permissions?.query) {
+                    const perm = await navigator.permissions.query({ name: 'microphone' });
+                    document.getElementById('mic-perm').textContent = '✅ 已允许';
+                    document.getElementById('mic-perm').className = 'value pass';
+                    permissionHint.classList.remove('visible');
+                }
+            } catch (err) {
+                const msg = err instanceof Error ? err.message : '未知错误';
+                log(`❌ 权限请求失败: ${msg}`, 'error');
+                setStatus(`❌ 权限被拒绝: ${msg}`, 'error');
+                if (err instanceof DOMException && (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError')) {
+                    showPermissionHint('🚫 你点击了「阻止」或浏览器自动拒绝了麦克风请求。<br><br>解决方法：<br>1. 点击地址栏左侧的 <b>🔒</b> 或 <b>ⓘ</b> 图标<br>2. 找到「麦克风」→ 改为「允许」<br>3. 刷新页面后重试');
+                }
+            }
+        }
+
+        // ---- Recording ----
+        async function startRecording() {
+            log('开始录音流程...', 'info');
+            setStatus('请求麦克风...', 'idle');
+
+            try {
+                audioChunks = [];
+                recordedBlob = null;
+
+                const stream = await navigator.mediaDevices.getUserMedia({
+                    audio: {
+                        echoCancellation: true,
+                        noiseSuppression: true,
+                        autoGainControl: true,
+                    }
+                });
+                audioStream = stream;
+
+                const track = stream.getAudioTracks()[0];
+                log(`✅ 音频轨道: "${track.label}" (enabled: ${track.enabled}, readyState: ${track.readyState})`, 'success');
+
+                // Setup audio context + analyser
+                audioContext = new AudioContext();
+                const source = audioContext.createMediaStreamSource(stream);
+                const analyser = audioContext.createAnalyser();
+                analyser.fftSize = 256;
+                source.connect(analyser);
+                analyserNode = analyser;
+
+                levelContainer.style.display = 'block';
+
+                // Level detection
+                const dataArray = new Uint8Array(analyser.frequencyBinCount);
+                function updateLevel() {
+                    if (!analyserNode) return;
+                    analyserNode.getByteTimeDomainData(dataArray);
+                    let max = 0;
+                    for (let i = 0; i < dataArray.length; i++) {
+                        const v = Math.abs(dataArray[i] - 128);
+                        if (v > max) max = v;
+                    }
+                    const pct = Math.min((max / 128) * 100, 100);
+                    levelBar.style.width = pct + '%';
+                    levelText.textContent = Math.round(pct) + '%';
+                    animationId = requestAnimationFrame(updateLevel);
+                }
+                updateLevel();
+
+                // Determine best MIME type
+                let mimeType = 'audio/webm;codecs=opus';
+                if (!MediaRecorder.isTypeSupported(mimeType)) {
+                    mimeType = MediaRecorder.isTypeSupported('audio/webm') ? 'audio/webm' :
+                              MediaRecorder.isTypeSupported('audio/ogg;codecs=opus') ? 'audio/ogg;codecs=opus' : '';
+                }
+                log(`使用 MIME 类型: ${mimeType || '浏览器默认'}`, 'info');
+
+                mediaRecorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
+
+                mediaRecorder.ondataavailable = (event) => {
+                    if (event.data.size > 0) {
+                        audioChunks.push(event.data);
+                        log(`📦 收到音频数据: ${event.data.size} bytes (共 ${audioChunks.length} 块)`, 'info');
+                    }
+                };
+
+                mediaRecorder.onstart = () => {
+                    log('✅ MediaRecorder 已开始', 'success');
+                    setStatus('🎤 正在录音...', 'recording');
+                };
+
+                mediaRecorder.onstop = () => {
+                    log('⏹ MediaRecorder 已停止', 'info');
+                    recordedBlob = new Blob(audioChunks, { type: mimeType || 'audio/webm' });
+                    log(`✅ 录音完成: ${recordedBlob.size} bytes (${(recordedBlob.size / 1024).toFixed(1)} KB)`, 'success');
+
+                    // Cleanup
+                    if (animationId) cancelAnimationFrame(animationId);
+                    animationId = null;
+                    levelContainer.style.display = 'none';
+                    levelBar.style.width = '0%';
+                    analyserNode = null;
+
+                    stream.getTracks().forEach(t => t.stop());
+                    audioStream = null;
+
+                    setStatus(`✅ 录音完成 (${(recordedBlob.size / 1024).toFixed(1)} KB)`, 'success');
+
+                    document.getElementById('btn-playback').disabled = false;
+                };
+
+                mediaRecorder.onerror = (event) => {
+                    log(`❌ MediaRecorder 错误: ${event.error?.message || '未知'}`, 'error');
+                    setStatus('发生错误', 'error');
+                };
+
+                mediaRecorder.start(100);
+
+                document.getElementById('btn-start').disabled = true;
+                document.getElementById('btn-stop').disabled = false;
+
+            } catch (err) {
+                const msg = err instanceof Error ? err.message : '未知错误';
+                log(`❌ 录音启动失败: ${msg}`, 'error');
+                setStatus(`❌ 失败: ${msg}`, 'error');
+                levelContainer.style.display = 'none';
+            }
+        }
+
+        function stopRecording() {
+            if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+                mediaRecorder.stop();
+                mediaRecorder = null;
+            } else {
+                // Cleanup even if no MediaRecorder
+                if (audioStream) {
+                    audioStream.getTracks().forEach(t => t.stop());
+                    audioStream = null;
+                }
+                if (animationId) cancelAnimationFrame(animationId);
+                levelContainer.style.display = 'none';
+                setStatus('已停止', 'idle');
+            }
+
+            if (audioContext && audioContext.state !== 'closed') {
+                audioContext.close().catch(console.warn);
+                audioContext = null;
+            }
+
+            document.getElementById('btn-start').disabled = false;
+            document.getElementById('btn-stop').disabled = true;
+        }
+
+        function playbackRecording() {
+            if (!recordedBlob) {
+                log('没有可播放的录音', 'warn');
+                return;
+            }
+            const url = URL.createObjectURL(recordedBlob);
+            const audio = new Audio(url);
+            audio.onplay = () => log('🔊 正在播放录音...', 'info');
+            audio.onended = () => {
+                log('✅ 播放完毕', 'success');
+                URL.revokeObjectURL(url);
+            };
+            audio.onerror = (e) => log(`❌ 播放失败: ${e.message || '未知'}`, 'error');
+            audio.play().catch(err => log(`❌ 播放失败: ${err.message}`, 'error'));
+            log(`开始播放 ${(recordedBlob.size / 1024).toFixed(1)} KB 录音`, 'info');
+        }
+
+        // ---- Event listeners ----
+        document.getElementById('btn-enumerate').onclick = enumerateDevices;
+        document.getElementById('btn-request-perm').onclick = requestPermissionAndEnumerate;
+        document.getElementById('btn-start').onclick = startRecording;
+        document.getElementById('btn-stop').onclick = stopRecording;
+        document.getElementById('btn-playback').onclick = playbackRecording;
+
+        // ---- Run on load ----
+        log('诊断工具已加载', 'info');
+        runEnvChecks();
+        enumerateDevices();
+    </script>
+</body>
+</html>

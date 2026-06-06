@@ -1,0 +1,17 @@
+fastapi==0.116.1
+uvicorn[standard]==0.35.0
+websockets==15.0.1
+pydantic==2.11.7
+pydantic-settings==2.10.1
+httpx==0.28.1
+python-dotenv==1.1.1
+openai==1.99.9
+numpy==2.3.2
+soundfile==0.13.1
+
+# --- Real-time ASR options (install at least one) ---
+# funasr>=1.1.0     # Alibaba funasr with SenseVoiceSmall (recommended)
+# webrtcvad>=2.0.10 # Lightweight VAD
+
+# --- Runtime ---
+python-multipart>=0.0.18

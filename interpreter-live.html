@@ -1,0 +1,263 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AI 同传助手 · 实时版</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;overflow:hidden}
+:root{color-scheme:light}.dark{color-scheme:dark}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:0.4}}.animate-pulse{animation:pulse 1.5s infinite}
+.rec-dot{width:8px;height:8px;border-radius:50%;background:#ef4444;display:inline-block;animation:pulse 1s infinite}
+.scrollbar-thin::-webkit-scrollbar{width:5px}
+.scrollbar-thin::-webkit-scrollbar-thumb{background:#a1a1aa;border-radius:3px}
+.dark .scrollbar-thin::-webkit-scrollbar-thumb{background:#3f3f46}
+</style>
+</head>
+<body class="antialiased bg-zinc-100 dark:bg-zinc-950 text-zinc-900 dark:text-zinc-100"><div id="app"></div>
+<script>
+// ===== STATE =====
+const S={theme:'dark',status:'idle',sourceLang:'zh',targetLang:'zh',error:null,apiKey:'sk-c241ba22005040b3b50c92ae89c12891',apiModel:'deepseek-chat',counts:{tp:0,trp:0,pp:0,np:0}}
+const DEEPSEEK_BASE='https://api.deepseek.com/v1'
+const LN={zh:'中文',en:'English',ja:'日本語',ko:'한국어'}
+function $(id){return document.getElementById(id)}
+function esc(s){const d=document.createElement('div');d.textContent=s;return d.innerHTML}
+function ts(){return new Date().toTimeString().slice(0,8)}
+function hideEmpty(id){const e=$(id);if(e)e.style.display='none'}
+function upCnt(id,n){const e=$(id);if(e)e.textContent=n+' 条'}
+
+// ===== RENDER =====
+function render(){
+  const d=S.theme==='dark';const rec=S.status==='recording';const pau=S.status==='paused'
+  document.body.className=(d?'dark ':'')+'antialiased bg-zinc-100 dark:bg-zinc-950 text-zinc-900 dark:text-zinc-100'
+  document.getElementById('app').innerHTML=`<div class="flex flex-col h-screen w-full overflow-hidden">
+<div class="border-b px-5 py-2.5 flex flex-col gap-1.5 bg-white dark:bg-zinc-950 border-zinc-200 dark:border-zinc-800">
+  <div class="flex items-center justify-between gap-3 flex-wrap">
+    <div class="flex items-center gap-2">
+      <h1 class="text-base font-bold">AI 同传助手</h1>
+      <span class="text-[10px] px-1.5 py-0.5 rounded-full ${rec?'bg-green-100 text-green-700 dark:bg-green-950/50 dark:text-green-400':'bg-zinc-200 dark:bg-zinc-800 text-zinc-500'}">${rec?'LIVE':'离线'}</span>
+    </div>
+    <div class="flex items-center gap-2 flex-wrap">
+      <select id="sl" class="px-2.5 py-1.5 rounded text-xs border bg-zinc-50 dark:bg-zinc-900 border-zinc-300 dark:border-zinc-700 w-20">
+        <option value="zh"${S.sourceLang==='zh'?' selected':''}>中文</option>
+        <option value="en"${S.sourceLang==='en'?' selected':''}>English</option>
+        <option value="ja"${S.sourceLang==='ja'?' selected':''}>日本語</option>
+      </select><span class="text-zinc-400 text-xs">→</span>
+      <select id="tl" class="px-2.5 py-1.5 rounded text-xs border bg-zinc-50 dark:bg-zinc-900 border-zinc-300 dark:border-zinc-700 w-20">
+        <option value="zh"${S.targetLang==='zh'?' selected':''}>中文</option>
+        <option value="en"${S.targetLang==='en'?' selected':''}>English</option>
+        <option value="ja"${S.targetLang==='ja'?' selected':''}>日本語</option>
+        <option value="ko"${S.targetLang==='ko'?' selected':''}>한국어</option>
+      </select>
+      <div class="h-6 w-px bg-zinc-300 dark:bg-zinc-700"></div>
+      <button id="br" class="flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-medium transition-all ${rec?'bg-amber-500 hover:bg-amber-600 text-white':'bg-cyan-600 hover:bg-cyan-700 text-white'}">
+        ${rec?'⏸ 暂停':pau?'▶ 继续':'🎤 开始'}
+      </button>
+      ${(rec||pau)?'<button id="bs" class="px-3 py-1.5 rounded text-xs font-medium bg-zinc-600 hover:bg-zinc-700 text-white">⏹ 停止</button>':''}
+      <div class="h-6 w-px bg-zinc-300 dark:bg-zinc-700"></div>
+      <button id="bt" class="p-1.5 rounded hover:bg-zinc-100 dark:hover:bg-zinc-800 text-zinc-500 text-xs">${d?'☀️':'🌙'}</button>
+    </div>
+  </div>
+  <div class="flex items-center gap-2">
+    <span class="text-[10px] text-zinc-400 whitespace-nowrap">🔑 DeepSeek Key:</span>
+    <input id="ak" type="password" class="flex-1 px-2 py-1 rounded text-[10px] border bg-zinc-50 dark:bg-zinc-900 border-zinc-300 dark:border-zinc-700" placeholder="sk-..." value="${esc(S.apiKey)}">
+    <span class="text-[10px] text-zinc-400">模型:</span>
+    <select id="am" class="px-2 py-1 rounded text-[10px] border bg-zinc-50 dark:bg-zinc-900 border-zinc-300 dark:border-zinc-700">
+      <option value="deepseek-chat"${S.apiModel==='deepseek-chat'?' selected':''}>deepseek-chat</option>
+    </select>
+  </div>
+  <div class="flex items-center gap-3 text-[10px] text-zinc-500">
+    <span class="${S.status==='error'?'text-red-400':rec?'text-amber-400':''}">${rec?'<span class="rec-dot mr-1"></span>':''}${st(S.status)}</span>
+    ${S.error?'<span class="text-red-400">'+esc(S.error)+'</span>':''}
+    ${rec?'<span class="text-emerald-400">🎤 聆听中... 说完停顿即翻译</span>':''}
+  </div>
+</div>
+<div class="flex-1 flex overflow-hidden min-h-0">
+  <div class="flex-1 min-w-0 border-r border-zinc-200 dark:border-zinc-700 flex flex-col">
+    <div class="px-4 py-2 border-b flex items-center justify-between bg-white dark:bg-zinc-950 border-zinc-200 dark:border-zinc-800 shrink-0">
+      <h3 class="text-xs font-semibold">🎤 源文本</h3>
+      <span class="text-[10px] px-2 py-0.5 rounded-full bg-zinc-200 dark:bg-zinc-800 text-zinc-500" id="tc">0 条</span>
+    </div>
+    <div class="flex-1 overflow-y-auto p-3 space-y-2 scrollbar-thin text-sm" id="tp"><div class="h-full flex items-center justify-center text-zinc-400" id="te">点击开始说话...</div></div>
+  </div>
+  <div class="flex-1 min-w-0 border-r border-zinc-200 dark:border-zinc-700 flex flex-col">
+    <div class="px-4 py-2 border-b flex items-center justify-between bg-white dark:bg-zinc-950 border-zinc-200 dark:border-zinc-800 shrink-0">
+      <h3 class="text-xs font-semibold">🌐 翻译 <span id="tl-label" class="text-zinc-400 font-normal">(中文)</span></h3>
+      <span class="text-[10px] px-2 py-0.5 rounded-full bg-zinc-200 dark:bg-zinc-800 text-zinc-500" id="trc">0 条</span>
+    </div>
+    <div class="flex-1 overflow-y-auto p-3 space-y-2 scrollbar-thin text-sm" id="trp"><div class="h-full flex items-center justify-center text-zinc-400" id="tre">等待翻译...</div></div>
+  </div>
+  <div class="flex-1 min-w-0 border-r border-zinc-200 dark:border-zinc-700 flex flex-col">
+    <div class="px-4 py-2 border-b flex items-center justify-between bg-white dark:bg-zinc-950 border-zinc-200 dark:border-zinc-800 shrink-0">
+      <h3 class="text-xs font-semibold">📝 原语重述</h3>
+      <span class="text-[10px] px-2 py-0.5 rounded-full bg-zinc-200 dark:bg-zinc-800 text-zinc-500" id="pc">0 条</span>
+    </div>
+    <div class="flex-1 overflow-y-auto p-3 space-y-2 scrollbar-thin text-sm" id="pp"><div class="h-full flex items-center justify-center text-zinc-400" id="pe">等待内容...</div></div>
+  </div>
+  <div class="flex-1 min-w-0 flex flex-col">
+    <div class="px-4 py-2 border-b flex items-center justify-between bg-white dark:bg-zinc-950 border-zinc-200 dark:border-zinc-800 shrink-0">
+      <h3 class="text-xs font-semibold">📋 口译笔记</h3>
+      <span class="text-[10px] px-2 py-0.5 rounded-full bg-zinc-200 dark:bg-zinc-800 text-zinc-500" id="nc">0 条</span>
+    </div>
+    <div class="flex-1 overflow-y-auto p-3 space-y-2 scrollbar-thin text-sm" id="np"><div class="h-full flex items-center justify-center text-zinc-400" id="ne">等待内容...</div></div>
+  </div>
+</div></div>`
+  // Update translation header
+  const ttl=$('tl-label');if(ttl)ttl.textContent='('+(LN[S.targetLang]||S.targetLang)+')'
+  bind()
+  if(rec)ensureInterim()
+}
+
+function st(s){switch(s){
+  case'idle':return'就绪';case'requesting':return'请求权限...';case'recording':return'实时转写中...'
+  case'paused':return'已暂停';case'stopped':return'已停止';case'error':return S.error||'错误';default:return''}}
+
+// ===== DIRECT DOM =====
+function ensureInterim(){if($('il'))return;hideEmpty('te');const p=$('tp');if(!p)return
+  const el=document.createElement('div');el.id='il'
+  el.className='p-2.5 rounded-lg border bg-blue-50 dark:bg-blue-950/20 border-blue-100 dark:border-blue-900/30'
+  el.innerHTML='<div class="flex items-start justify-between gap-2"><p class="text-sm leading-relaxed" id="it"></p><span class="shrink-0 text-[10px] text-blue-500 animate-pulse">...</span></div>'
+  p.appendChild(el)}
+function updInterim(t){const e=$('it');if(e)e.textContent=t}
+function rmInterim(){const e=$('il');if(e)e.remove()}
+function panelPush(id,eid,html){
+  hideEmpty(eid);const p=$(id);if(!p)return
+  const d=document.createElement('div');d.className='p-2.5 rounded-lg border bg-white dark:bg-zinc-800/50 border-zinc-200 dark:border-zinc-700'
+  d.innerHTML=html;p.appendChild(d);p.scrollTop=p.scrollHeight
+}
+function addTranscript(text,f){
+  if(f){rmInterim();panelPush('tp','te','<p class="text-sm leading-relaxed">'+esc(text)+'</p><div class="mt-1 text-[10px] text-zinc-400">'+ts()+'</div>');upCnt('tc',++S.counts.tp)}
+  else{ensureInterim();updInterim(text)}
+}
+function addTranslation(t){panelPush('trp','tre','<p class="text-sm leading-relaxed">'+esc(t)+'</p><div class="mt-1 text-[10px] text-zinc-400">'+ts()+'</div>');upCnt('trc',++S.counts.trp)}
+function addParaphrase(o,s){
+  panelPush('pp','pe','<div class="text-[10px] font-medium text-zinc-400">原文</div><p class="text-xs text-zinc-600 dark:text-zinc-300">'+esc(o)+'</p><div class="h-px bg-zinc-200 dark:bg-zinc-700 my-1.5"></div><div class="text-[10px] font-medium text-emerald-500">简化</div><p class="text-sm font-medium">'+esc(s)+'</p>')
+  upCnt('pc',++S.counts.pp)}
+function addNote(c){if(!c)return;panelPush('np','ne','<pre class="text-sm font-mono text-zinc-800 dark:text-zinc-200">'+esc(c)+'</pre>');upCnt('nc',++S.counts.np)}
+function clearPanels(){
+  ['tp','trp','pp','np'].forEach(id=>{const p=$(id);if(!p)return;const c=p.children;for(let i=c.length-1;i>=0;i--){const k=c[i];if(k.id!=='te'&&k.id!=='tre'&&k.id!=='pe'&&k.id!=='ne')k.remove()}})
+  ;['tc','trc','pc','nc'].forEach(id=>{const e=$(id);if(e)e.textContent='0 条'});S.counts={tp:0,trp:0,pp:0,np:0};rmInterim()
+}
+function removeLastPlaceholder(id){const p=$(id);if(!p)return;const l=p.lastElementChild;if(l&&l.textContent.includes('翻译中...'))l.remove()}
+
+// ===== DEEPSEEK API =====
+async function callDeepSeek(text,src,tgt){
+  const key=S.apiKey||$('ak')?.value||''
+  if(!key){addTranslation('[请先输入 DeepSeek Key]');return}
+  S.apiKey=key
+  const srcName=LN[src]||src,tgtName=LN[tgt]||tgt
+  const sys=`你是一位专业同传助手。将收到的文本完成三项任务以JSON返回。
+
+1-翻译：译成${tgtName}，准确自然。
+2-同语言简化重述：用${srcName}改写成更简单易懂的表达，简单词汇，长句拆短。
+3-口译笔记：符号化笔记(↑↓→#⏰)，提取专有名、数字、结论。
+
+JSON格式：{"translation":"...","paraphrase":"...","notes":"..."}`
+  addTranslation('翻译中...')
+  try{
+    const r=await fetch(DEEPSEEK_BASE+'/chat/completions',{
+      method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+key},
+      body:JSON.stringify({model:S.apiModel,messages:[{role:'system',content:sys},{role:'user',content:'原文('+srcName+'): '+text+'\n翻译成: '+tgtName}],
+        temperature:0.1,max_tokens:1024,response_format:{type:'json_object'}})
+    })
+    if(!r.ok)throw new Error((await r.json().catch(()=>{})).error?.message||'HTTP '+r.status)
+    const d=await r.json();const c=d.choices?.[0]?.message?.content||''
+    let parsed;try{parsed=JSON.parse(c.replace(/^```(?:json)?\s*/,'').replace(/\s*```$/,''))}catch(e){parsed={}}
+    removeLastPlaceholder('trp')
+    addTranslation(parsed.translation||'[解析失败]')
+    addParaphrase(text,parsed.paraphrase||text)
+    addNote(parsed.notes||'')
+  }catch(e){
+    console.error(e)
+    removeLastPlaceholder('trp')
+    addTranslation('[API错误] '+e.message)
+    addParaphrase(text,simpleSimplify(text))
+    addNote(simpleNotes(text))
+  }
+}
+
+// ===== FALLBACK =====
+const SMAP=[
+  [/utilize/gi,'use'],[/implement(?:ed|ing)?/gi,'put in place'],[/subsequent(?:ly)?/gi,'next'],
+  [/prior to/gi,'before'],[/demonstrat(?:e|es|ed|ing)/gi,'show'],[/sufficient/gi,'enough'],
+  [/approximately/gi,'about'],[/nevertheless/gi,'but'],[/commenc(?:e|es|ed|ing)/gi,'start'],
+  [/terminat(?:e|es|ed|ing)/gi,'end'],[/obtain(?:ed|ing)?/gi,'get'],[/purchas(?:e|es|ed|ing)/gi,'buy'],
+  [/assistance/gi,'help'],[/regarding/gi,'about'],[/additional/gi,'more'],
+  [/significant(?:ly)?/gi,'important'],[/numerous/gi,'many'],[/facilitate/gi,'help with'],
+  ['are able to','can'],['is able to','can'],['in order to','to'],
+  ['due to the fact that','because'],['at this point in time','now'],
+  ['in the event that','if'],['with the exception of','except'],
+  [/a multitude of/gi,'many'],[/a majority of/gi,'most'],
+]
+function simpleSimplify(t){let s=t;for(const[p,r]of SMAP)s=s.replace(p,r);return s}
+function simpleNotes(t){
+  const lines=[],kw=[...new Set(t.split(/\s+/).filter(w=>w.length>2&&w[0]===w[0].toUpperCase()&&w.slice(1)===w.slice(1).toLowerCase()))]
+  const nums=t.match(/\b\d+[\d,.]*\b/g)
+  if(kw.length>0)lines.push('→ '+kw.join(', '))
+  if(nums)lines.push('  # '+nums.join(', '))
+  const l=t.toLowerCase()
+  if(/(growth|increase|rise|grew)/.test(l))lines.push('  ↑ 增长')
+  if(/(decrease|decline|drop|fell)/.test(l))lines.push('  ↓ 下降')
+  if(/(milestone|deadline)/.test(l))lines.push('  ⏰ 里程碑')
+  if(/(percent|%)/.test(l))lines.push('  📊 百分比')
+  return lines.join('\n')
+}
+
+// ===== SPEECH RECOGNITION =====
+let rec=null,pending='',rtimer=null
+function startSpeechRec(){
+  S.apiKey=$('ak')?.value||S.apiKey;S.apiModel=$('am')?.value||S.apiModel
+  const SR=window.SpeechRecognition||window.webkitSpeechRecognition
+  if(!SR){S.error='请用 Chrome';render();return}
+  const r=new SR();r.continuous=true;r.interimResults=true
+  r.lang=S.sourceLang==='zh'?'zh-CN':S.sourceLang==='en'?'en-US':S.sourceLang==='ja'?'ja-JP':'zh-CN'
+  r.maxAlternatives=1;pending=''
+  r.onresult=function(ev){
+    let inter='',fin=''
+    for(let i=ev.resultIndex;i<ev.results.length;i++){
+      if(ev.results[i].isFinal){fin+=ev.results[i][0].transcript;pending+=ev.results[i][0].transcript}
+      else{inter+=ev.results[i][0].transcript}
+    }
+    if(inter){ensureInterim();updInterim(inter)}
+    if(fin.trim()){rmInterim();const t=fin.trim();addTranscript(t,true);callDeepSeek(t,S.sourceLang,S.targetLang)}
+  }
+  r.onerror=function(ev){if(ev.error!=='no-speech'&&ev.error!=='aborted'){S.error='语音: '+ev.error;render()}}
+  r.onend=function(){if(S.status==='recording'&&!rtimer){rtimer=setTimeout(()=>{rtimer=null;startSpeechRec()},200)}}
+  rec=r;try{r.start()}catch(e){}
+}
+function stopSpeechRec(){
+  if(rtimer){clearTimeout(rtimer);rtimer=null}
+  if(rec){try{rec.onend=null;rec.stop()}catch(e){}rec=null}
+  if(pending.trim()){const t=pending.trim();pending='';addTranscript(t,true);callDeepSeek(t,S.sourceLang,S.targetLang)}
+  rmInterim()
+}
+
+// ===== EVENTS =====
+function bind(){
+  $('sl')?.addEventListener('change',e=>{S.sourceLang=e.target.value;if(S.status==='recording'){stopSpeechRec();setTimeout(startSpeechRec,300)}})
+  $('tl')?.addEventListener('change',e=>{S.targetLang=e.target.value;render()})
+  $('br')?.addEventListener('click',toggleRec)
+  $('bs')?.addEventListener('click',stopAll)
+  $('bt')?.addEventListener('click',()=>{S.theme=S.theme==='dark'?'light':'dark';render()})
+  $('ak')?.addEventListener('blur',e=>{S.apiKey=e.target.value})
+}
+
+async function toggleRec(){
+  if(S.status==='idle'||S.status==='stopped'||S.status==='error'){
+    S.apiKey=$('ak')?.value||''
+    if(!S.apiKey){S.error='请先输入 DeepSeek API Key';render();return}
+    S.status='requesting';S.error=null;render()
+    try{await navigator.mediaDevices.getUserMedia({audio:true});S.status='recording';startSpeechRec();render()}
+    catch(e){S.status='error';S.error='麦克风: '+e.message;render()}
+  }else if(S.status==='recording'){stopSpeechRec();S.status='paused';render()}
+  else if(S.status==='paused'){S.status='recording';render();startSpeechRec()}
+}
+function stopAll(){stopSpeechRec();S.status='stopped';clearPanels();render()}
+
+// ===== BOOT =====
+document.addEventListener('DOMContentLoaded',()=>render())
+</script>
+</body>
+</html>
