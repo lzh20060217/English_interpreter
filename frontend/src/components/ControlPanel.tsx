@@ -1,21 +1,19 @@
 'use client';
 
-import { useCallback, useState } from 'react';
-import { Mic, Pause, StopCircle, Sun, Moon, Languages, RefreshCw, AlertCircle } from 'lucide-react';
+import { useCallback, useEffect, useRef } from 'react';
+import { Mic, Pause, StopCircle, Sun, Moon, Languages, RefreshCw, AlertCircle, Wifi, WifiOff } from 'lucide-react';
 
 import { useInterpreterStore } from '@/features/interpreter/store';
 import { SOURCE_LANGUAGES, TARGET_LANGUAGES } from '@/lib/config';
 import { useAudioRecorder } from '@/hooks/useAudioRecorder';
-import { clsx } from 'clsx';
-import { twMerge } from 'tailwind-merge';
-
-function cn(...inputs: unknown[]) {
-  return twMerge(clsx(inputs));
-}
+import { useWebSocket } from '@/hooks/useWebSocket';
+import { useSpeechRecognition } from '@/hooks/useSpeechRecognition';
+import { cn } from '@/lib/utils';
 
 export function ControlPanel() {
   const {
     theme,
+    connectionStatus,
     sourceLanguage,
     targetLanguage,
     setTheme,
@@ -25,6 +23,36 @@ export function ControlPanel() {
     loadDemoData,
   } = useInterpreterStore();
 
+  // WebSocket connection
+  const {
+    sendAudio,
+    sendText,
+    sendControl,
+    connect: wsConnect,
+    disconnect: wsDisconnect,
+  } = useWebSocket();
+
+  // Browser-based speech recognition (fallback when backend ASR is unavailable)
+  const speechLang =
+    sourceLanguage === 'zh' ? 'zh-CN' :
+    sourceLanguage === 'en' ? 'en-US' :
+    sourceLanguage === 'ja' ? 'ja-JP' :
+    sourceLanguage === 'ko' ? 'ko-KR' :
+    'zh-CN';
+
+  const speech = useSpeechRecognition({
+    language: speechLang,
+    continuous: true,
+    interimResults: true,
+    onResult: (text, isFinal) => {
+      if (isFinal && text.trim()) {
+        // Send recognized text to backend for LLM processing
+        sendText(text);
+      }
+    },
+  });
+
+  // Audio recorder with PCM callback → WebSocket
   const {
     status,
     isRecording,
@@ -39,19 +67,52 @@ export function ControlPanel() {
     setSelectedDeviceId,
     refreshDevices,
     permissionState,
-  } = useAudioRecorder();
+  } = useAudioRecorder({
+    onAudioChunk: (chunk) => {
+      sendAudio(chunk);
+    },
+  });
 
-  const [showDeviceMenu, setShowDeviceMenu] = useState(false);
+  // Track if we manually stopped to avoid re-triggering
+  const manualStopRef = useRef(false);
 
   const handleToggleListening = useCallback(() => {
     if (status === 'idle' || status === 'stopped' || status === 'error') {
+      manualStopRef.current = false;
+      // Connect WebSocket first, then start recording
+      wsConnect();
+      if (speech.isSupported) {
+        speech.start();
+      }
       startRecording();
     } else if (status === 'recording') {
+      sendControl('pause');
       pauseRecording();
+      speech.stop();
     } else if (status === 'paused') {
+      sendControl('resume');
       resumeRecording();
+      if (speech.isSupported) {
+        speech.start();
+      }
     }
-  }, [status, startRecording, pauseRecording, resumeRecording]);
+  }, [status, startRecording, pauseRecording, resumeRecording, wsConnect, speech, sendControl]);
+
+  const handleStop = useCallback(() => {
+    manualStopRef.current = true;
+    sendControl('stop');
+    stopRecording();
+    speech.stop();
+    wsDisconnect();
+  }, [stopRecording, speech, wsDisconnect, sendControl]);
+
+  // Clean up WebSocket and speech recognition when recording errors
+  useEffect(() => {
+    if (status === 'error' && !manualStopRef.current) {
+      wsDisconnect();
+      speech.stop();
+    }
+  }, [status, wsDisconnect, speech]);
 
   const toggleTheme = () => {
     setTheme(theme === 'dark' ? 'light' : 'dark');
@@ -68,6 +129,18 @@ export function ControlPanel() {
       default: return '就绪';
     }
   };
+
+  // Connection status dot
+  const getConnectionDot = () => {
+    switch (connectionStatus) {
+      case 'connected': return { color: 'bg-green-500', text: '已连接' };
+      case 'connecting': return { color: 'bg-yellow-500 animate-pulse', text: '连接中...' };
+      case 'error': return { color: 'bg-red-500', text: '连接失败' };
+      default: return { color: 'bg-zinc-400', text: '未连接' };
+    }
+  };
+
+  const connDot = getConnectionDot();
 
   // Audio level bar color
   const getLevelBarColor = () => {
@@ -144,6 +217,19 @@ export function ControlPanel() {
 
           <div className="h-8 w-px bg-zinc-300 dark:bg-zinc-700" />
 
+          {/* Connection status */}
+          <div className="flex items-center gap-1.5" title={connDot.text}>
+            {connectionStatus === 'connected'
+              ? <Wifi size={14} className="text-green-400" />
+              : connectionStatus === 'connecting'
+                ? <Wifi size={14} className="text-yellow-400 animate-pulse" />
+                : <WifiOff size={14} className="text-zinc-500" />
+            }
+            <span className="text-[10px] text-zinc-500">{connDot.text}</span>
+          </div>
+
+          <div className="h-8 w-px bg-zinc-300 dark:bg-zinc-700" />
+
           {/* Recording controls */}
           <div className="flex items-center gap-2">
             <button
@@ -162,7 +248,7 @@ export function ControlPanel() {
             </button>
             {(status === 'recording' || status === 'paused') && (
               <button
-                onClick={stopRecording}
+                onClick={handleStop}
                 className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium bg-zinc-600 hover:bg-zinc-700 text-white transition-all"
               >
                 <StopCircle size={18} />
@@ -279,6 +365,21 @@ export function ControlPanel() {
           {status === 'recording' && <span className="inline-block w-2 h-2 rounded-full bg-red-500 animate-pulse mr-1" />}
           {getStatusText()}
         </div>
+
+        {/* Speech recognition indicator */}
+        {speech.isListening && (
+          <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-purple-100 text-purple-700 dark:bg-purple-950/50 dark:text-purple-400">
+            浏览器语音识别
+          </span>
+        )}
+
+        {/* Connection error notice */}
+        {connectionStatus === 'error' && (
+          <div className="flex items-center gap-1 text-xs text-amber-400">
+            <AlertCircle size={12} />
+            <span>后端未连接，翻译/笔记功能不可用</span>
+          </div>
+        )}
 
         {/* Permission warnings */}
         {showPermissionWarning && (

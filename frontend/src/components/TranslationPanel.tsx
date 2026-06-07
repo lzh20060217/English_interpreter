@@ -4,12 +4,7 @@ import { useEffect, useRef } from 'react';
 import { Languages } from 'lucide-react';
 
 import { useInterpreterStore } from '@/features/interpreter/store';
-import { clsx } from 'clsx';
-import { twMerge } from 'tailwind-merge';
-
-function cn(...inputs: unknown[]) {
-  return twMerge(clsx(inputs));
-}
+import { cn } from '@/lib/utils';
 
 export function TranslationPanel() {
   const { theme, translations } = useInterpreterStore();

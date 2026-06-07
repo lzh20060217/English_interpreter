@@ -1,5 +1,7 @@
 export type ThemeMode = "dark" | "light";
 
+export type ConnectionStatus = "disconnected" | "connecting" | "connected" | "error";
+
 export type SessionStatus =
   | "idle"
   | "requesting"

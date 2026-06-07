@@ -1,12 +1,18 @@
 'use client';
 
 import { useState, useCallback, useRef, useEffect } from 'react';
+import { processAudioChunk } from '@/lib/audio-utils';
 
 type RecorderStatus = 'idle' | 'requesting' | 'recording' | 'paused' | 'stopped' | 'error';
 
 interface AudioDevice {
   deviceId: string;
   label: string;
+}
+
+interface UseAudioRecorderOptions {
+  /** Callback receiving raw PCM s16le ArrayBuffer chunks (~100ms, 16kHz mono) */
+  onAudioChunk?: (chunk: ArrayBuffer) => void;
 }
 
 interface UseAudioRecorderReturn {
@@ -59,7 +65,14 @@ function getChromePermissionState(): Promise<PermissionState | 'unsupported'> {
   return Promise.resolve('unsupported');
 }
 
-export function useAudioRecorder(): UseAudioRecorderReturn {
+export function useAudioRecorder(opts?: UseAudioRecorderOptions): UseAudioRecorderReturn {
+  const onAudioChunkRef = useRef(opts?.onAudioChunk);
+
+  // Sync ref with latest callback (refs should be updated in useEffect, not render)
+  useEffect(() => {
+    onAudioChunkRef.current = opts?.onAudioChunk;
+  });
+
   const [status, setStatus] = useState<RecorderStatus>('idle');
   const [error, setError] = useState<string | null>(null);
   const [audioContext, setAudioContext] = useState<AudioContext | null>(null);
@@ -72,6 +85,9 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
 
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioStreamRef = useRef<MediaStream | null>(null);
+  const scriptProcessorRef = useRef<ScriptProcessorNode | null>(null);
+  const bytesSentRef = useRef(0);
+  const lastSendTimeRef = useRef(0);
   const chunksRef = useRef<Blob[]>([]);
   const isCleaningUpRef = useRef(false);
   const statusRef = useRef<RecorderStatus>('idle');
@@ -224,6 +240,41 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
         };
         updateLevel();
 
+        // --- PCM extraction for WebSocket streaming ---
+        // Use ScriptProcessorNode to capture raw audio samples
+        const scriptProcessor = ctx.createScriptProcessor(4096, 1, 1);
+        scriptProcessorRef.current = scriptProcessor;
+        bytesSentRef.current = 0;
+        lastSendTimeRef.current = Date.now();
+
+        scriptProcessor.onaudioprocess = (event) => {
+          if (statusRef.current !== 'recording') return;
+
+          const inputData = event.inputBuffer.getChannelData(0);
+          const pcmChunk = processAudioChunk(
+            new Float32Array(inputData),
+            ctx.sampleRate
+          );
+          bytesSentRef.current += pcmChunk.byteLength;
+
+          // Throttle to ~100ms chunks (PCM s16le 16kHz mono = 3200 bytes/100ms)
+          const now = Date.now();
+          if (bytesSentRef.current >= 3200 || now - lastSendTimeRef.current >= 100) {
+            if (onAudioChunkRef.current) {
+              onAudioChunkRef.current(pcmChunk);
+            }
+            bytesSentRef.current = 0;
+            lastSendTimeRef.current = now;
+          }
+        };
+
+        // Connect: source → analyser (for level display)
+        //          source → scriptProcessor (for PCM extraction)
+        // Note: scriptProcessor needs a destination to process audio
+        source.connect(scriptProcessor);
+        scriptProcessor.connect(ctx.destination);
+        // --- End PCM extraction ---
+
         const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
           ? 'audio/webm;codecs=opus'
           : 'audio/webm';
@@ -240,6 +291,10 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
 
         mediaRecorder.onstop = () => {
           console.log('[Recorder] MediaRecorder stopped');
+          if (scriptProcessorRef.current) {
+            scriptProcessorRef.current.disconnect();
+            scriptProcessorRef.current = null;
+          }
           if (audioStreamRef.current) {
             audioStreamRef.current.getTracks().forEach((t) => t.stop());
             audioStreamRef.current = null;
@@ -302,6 +357,11 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
     }
     mediaRecorderRef.current = null;
 
+    if (scriptProcessorRef.current) {
+      scriptProcessorRef.current.disconnect();
+      scriptProcessorRef.current = null;
+    }
+
     if (audioStreamRef.current) {
       audioStreamRef.current.getTracks().forEach((t) => t.stop());
       audioStreamRef.current = null;
@@ -341,6 +401,15 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
         }
       }
       mediaRecorderRef.current = null;
+
+      if (scriptProcessorRef.current) {
+        try {
+          scriptProcessorRef.current.disconnect();
+        } catch (e) {
+          console.warn('ScriptProcessor disconnect error:', e);
+        }
+        scriptProcessorRef.current = null;
+      }
 
       if (audioStreamRef.current) {
         audioStreamRef.current.getTracks().forEach((t) => t.stop());

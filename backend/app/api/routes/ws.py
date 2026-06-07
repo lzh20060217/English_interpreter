@@ -2,15 +2,15 @@
 WebSocket endpoint for real-time audio streaming.
 Protocol:
   Client → Server:
-    - Binary: raw PCM s16le audio (16 kHz, mono, 100ms chunks)
-    - Text (JSON control): {"type":"config", "source_language":"zh", "target_language":"en"}
-                           {"type":"pause"}
-                           {"type":"resume"}
+    - Binary: raw PCM s16le audio (16 kHz, mono)
+    - Text (JSON control):
+        {"type":"config", "source_language":"zh", "target_language":"en"}
+        {"type":"pause"} / {"type":"resume"} / {"type":"stop"}
+        {"type":"text_input", "text":"..."}  ← browser-side ASR text
   Server → Client (text JSON):
     {"type":"status", "state":"..."}
-    {"type":"vad", "speaking":true}
-    {"type":"transcript", "text":"...", "is_final":false}
-    {"type":"transcript", "text":"...", "is_final":true}
+    {"type":"vad", "speaking":true|false}
+    {"type":"transcript", "text":"...", "is_final":false|true}
     {"type":"result", "transcript":"...", "translation":"...", "paraphrase":"...", "notes":"..."}
     {"type":"error", "message":"..."}
 """
@@ -18,43 +18,42 @@ Protocol:
 import asyncio
 import json
 import logging
-import struct
 import time
 
 import numpy as np
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from app.services.asr_service import AudioBuffer, is_available, transcribe
-from app.services.llm_service import process as llm_process
+from app.services.llm_service import process as llm_process, is_available as llm_available
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
 SAMPLE_RATE = 16000
-CHUNK_INTERVAL_SEC = 0.1  # 100ms
-TRANSCRIBE_INTERVAL_SEC = 1.8  # run ASR on partial audio every 1.8s during speech
-SILENCE_TIMEOUT_MS = 900  # ms of silence to consider utterance complete
-MAX_BUFFER_SEC = 10  # max audio buffer in seconds
+TRANSCRIBE_INTERVAL_SEC = 1.8
+SILENCE_TIMEOUT_MS = 900
 
 
 @router.websocket("/audio-stream")
 async def audio_stream(websocket: WebSocket):
     await websocket.accept()
-    logger.info("WebSocket connected")
+    logger.info("WebSocket connected (text+audio mode)")
 
-    # --- session state ---
     source_language = "zh"
     target_language = "zh"
     paused = False
+    asr_enabled = is_available()
+    llm_enabled = llm_available()
+
     audio_buffer = AudioBuffer(sample_rate=SAMPLE_RATE, silence_timeout_ms=SILENCE_TIMEOUT_MS)
 
-    # asyncio tasks
     tasks = []
 
     async def recv_loop():
-        """Receive audio chunks & control messages."""
+        """Receive audio chunks, text inputs, and control messages."""
         nonlocal source_language, target_language, paused
+
         try:
             while True:
                 msg = await websocket.receive()
@@ -67,7 +66,6 @@ async def audio_stream(websocket: WebSocket):
                     if paused:
                         continue
                     raw = msg["bytes"]
-                    # Convert s16le bytes → float32 numpy
                     try:
                         s16 = np.frombuffer(raw, dtype=np.int16)
                         f32 = s16.astype(np.float32) / 32768.0
@@ -75,46 +73,75 @@ async def audio_stream(websocket: WebSocket):
                     except Exception as e:
                         logger.warning("Audio decode error: %s", e)
 
-                # --- Text: control messages ---
+                # --- Text: control & text_input ---
                 elif msg.get("type") == "websocket.receive" and "text" in msg:
                     try:
                         data = json.loads(msg["text"])
                         cmd = data.get("type", "")
+
                         if cmd == "config":
                             source_language = data.get("source_language", source_language)
                             target_language = data.get("target_language", target_language)
                             audio_buffer.reset()
                             logger.info("Config: %s → %s", source_language, target_language)
+
                         elif cmd == "pause":
                             paused = True
                             await websocket.send_text(
                                 json.dumps({"type": "status", "state": "paused"})
                             )
+
                         elif cmd == "resume":
                             paused = False
                             await websocket.send_text(
                                 json.dumps({"type": "status", "state": "recording"})
                             )
+
+                        # --- Browser-side ASR text input ---
+                        elif cmd == "text_input":
+                            if paused:
+                                continue
+                            text = data.get("text", "").strip()
+                            if text:
+                                logger.info("Text input: %s", text[:80])
+                                # Echo as transcript
+                                await websocket.send_text(json.dumps({
+                                    "type": "transcript",
+                                    "text": text,
+                                    "is_final": True,
+                                }))
+                                # Run LLM pipeline
+                                loop = asyncio.get_running_loop()
+                                result = await loop.run_in_executor(
+                                    None, llm_process, text,
+                                    source_language, target_language,
+                                )
+                                await websocket.send_text(json.dumps({
+                                    "type": "result",
+                                    "transcript": text,
+                                    "translation": result.translation,
+                                    "paraphrase": result.paraphrase,
+                                    "notes": result.notes,
+                                }))
+
                     except json.JSONDecodeError:
                         pass
+
         except WebSocketDisconnect:
             logger.info("WebSocket disconnected (recv)")
         except Exception as e:
             logger.warning("recv_loop error: %s", e)
 
     async def process_loop():
-        """
-        Poll the audio buffer periodically.
-        - Every ~1.8s during speech: run ASR on partial audio → send interim transcript
-        - When utterance ends: run ASR + LLM → send full result
-        """
+        """Poll audio buffer for ASR on raw audio chunks."""
         nonlocal paused
+
         try:
             last_partial_time = 0.0
             last_speech_state = False
 
             while True:
-                await asyncio.sleep(0.2)  # poll every 200ms
+                await asyncio.sleep(0.2)
 
                 if paused:
                     continue
@@ -129,46 +156,34 @@ async def audio_stream(websocket: WebSocket):
                     )
                     last_speech_state = is_speaking
 
-                if not is_available():
-                    # ASR model not loaded — send a hint once
-                    await websocket.send_text(
-                        json.dumps({
-                            "type": "error",
-                            "message": "ASR 模型未加载，请安装 funasr",
-                        })
-                    )
+                if not asr_enabled:
+                    # No ASR model — this is fine, client uses browser ASR
                     await asyncio.sleep(5)
                     continue
 
-                # --- Check for completed utterances ---
+                # --- Completed utterance ---
                 utterance_audio = audio_buffer.pop_utterance_audio()
                 if utterance_audio is not None and len(utterance_audio) > SAMPLE_RATE * 0.3:
-                    # Run ASR on this complete utterance
                     try:
                         text = transcribe(utterance_audio, language=source_language)
                         if text:
-                            # Send final transcript
-                            await websocket.send_text(
-                                json.dumps({"type": "transcript", "text": text, "is_final": True})
-                            )
-                            # Run LLM pipeline in a thread to avoid blocking
+                            await websocket.send_text(json.dumps({
+                                "type": "transcript",
+                                "text": text,
+                                "is_final": True,
+                            }))
                             loop = asyncio.get_running_loop()
                             result = await loop.run_in_executor(
-                                None,
-                                llm_process,
-                                text,
-                                source_language,
-                                target_language,
+                                None, llm_process, text,
+                                source_language, target_language,
                             )
-                            await websocket.send_text(
-                                json.dumps({
-                                    "type": "result",
-                                    "transcript": text,
-                                    "translation": result.translation,
-                                    "paraphrase": result.paraphrase,
-                                    "notes": result.notes,
-                                })
-                            )
+                            await websocket.send_text(json.dumps({
+                                "type": "result",
+                                "transcript": text,
+                                "translation": result.translation,
+                                "paraphrase": result.paraphrase,
+                                "notes": result.notes,
+                            }))
                     except Exception as e:
                         logger.error("ASR/LLM error: %s", e)
                     last_partial_time = now
@@ -181,13 +196,11 @@ async def audio_stream(websocket: WebSocket):
                             try:
                                 text = transcribe(pa, language=source_language)
                                 if text:
-                                    await websocket.send_text(
-                                        json.dumps({
-                                            "type": "transcript",
-                                            "text": text,
-                                            "is_final": False,
-                                        })
-                                    )
+                                    await websocket.send_text(json.dumps({
+                                        "type": "transcript",
+                                        "text": text,
+                                        "is_final": False,
+                                    }))
                             except Exception as e:
                                 logger.error("Partial ASR error: %s", e)
                     last_partial_time = now
@@ -197,16 +210,17 @@ async def audio_stream(websocket: WebSocket):
         except Exception as e:
             logger.warning("process_loop error: %s", e)
 
-    # Run both loops concurrently
-    tasks = [
-        asyncio.create_task(recv_loop()),
-        asyncio.create_task(process_loop()),
-    ]
+    # Send initial status
+    await websocket.send_text(json.dumps({
+        "type": "status",
+        "state": "recording",
+        "asr_enabled": asr_enabled,
+        "llm_enabled": llm_enabled,
+    }))
+
+    tasks = [asyncio.create_task(recv_loop()), asyncio.create_task(process_loop())]
 
     try:
-        await websocket.send_text(
-            json.dumps({"type": "status", "state": "recording"})
-        )
         await asyncio.gather(*tasks)
     except (WebSocketDisconnect, Exception):
         pass

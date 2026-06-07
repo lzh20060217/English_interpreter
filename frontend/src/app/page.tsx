@@ -6,12 +6,7 @@ import { SourceTextPanel } from '@/components/SourceTextPanel';
 import { TranslationPanel } from '@/components/TranslationPanel';
 import { ParaphrasePanel } from '@/components/ParaphrasePanel';
 import { NotesPanel } from '@/components/NotesPanel';
-import { clsx } from 'clsx';
-import { twMerge } from 'tailwind-merge';
-
-function cn(...inputs: unknown[]) {
-  return twMerge(clsx(inputs));
-}
+import { cn } from '@/lib/utils';
 
 export default function Home() {
   const { theme } = useInterpreterStore();

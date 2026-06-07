@@ -1,6 +1,8 @@
 from fastapi import APIRouter
 
 from app.core.config import get_settings
+from app.services.asr_service import is_available as asr_available
+from app.services.llm_service import is_available as llm_available
 
 router = APIRouter()
 
@@ -14,8 +16,13 @@ async def get_runtime_config() -> dict[str, object]:
         "defaultSourceLanguage": settings.default_source_language,
         "defaultTargetLanguage": settings.default_target_language,
         "features": {
-            "streamingStt": False,
-            "realTimeTranslation": False,
-            "noteExtraction": False,
+            "streamingStt": asr_available(),
+            "realTimeTranslation": llm_available(),
+            "noteExtraction": llm_available(),
+            "browserAsrFallback": True,
+        },
+        "audio": {
+            "sampleRate": settings.audio_sample_rate,
+            "chunkMs": settings.websocket_chunk_ms,
         },
     }

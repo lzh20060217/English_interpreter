@@ -38,13 +38,19 @@ class LLMResult:
 _client: Optional[OpenAI] = None
 
 
+def is_available() -> bool:
+    """Check whether the LLM service has a configured API key."""
+    key = settings.llm_api_key or settings.openai_api_key
+    return bool(key)
+
+
 def _get_client() -> Optional[OpenAI]:
     global _client
     if _client is not None:
         return _client
     key = settings.llm_api_key or settings.openai_api_key
     if not key:
-        logger.warning("No LLM API key configured — LLM features disabled")
+        logger.warning("No LLM API key configured — using local fallback")
         return None
     _client = OpenAI(
         api_key=key,

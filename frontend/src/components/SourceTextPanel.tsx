@@ -4,12 +4,7 @@ import { useEffect, useRef } from 'react';
 import { Mic } from 'lucide-react';
 
 import { useInterpreterStore } from '@/features/interpreter/store';
-import { clsx } from 'clsx';
-import { twMerge } from 'tailwind-merge';
-
-function cn(...inputs: unknown[]) {
-  return twMerge(clsx(inputs));
-}
+import { cn } from '@/lib/utils';
 
 export function SourceTextPanel() {
   const { theme, transcripts, status } = useInterpreterStore();
