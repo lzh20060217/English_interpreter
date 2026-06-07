@@ -1,6 +1,7 @@
 .env
 .env.local
 .tools/
+.claude/
 backend/.venv/
 backend/__pycache__/
 backend/.pytest_cache/
